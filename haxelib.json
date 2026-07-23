@@ -1,0 +1,14 @@
+{
+    "name": "easypubsub",
+    "url": "",
+    "license": "MIT",
+    "version": "0.1.0",
+    "classPath": "src/",
+    "description": "A pub/sub engine over WebSockets with typed channels/events and JSON-unserializable subscriptions.",
+    "contributors": [],
+    "dependencies": {
+        "morestd": "",
+        "jsonmodel": "",
+        "hxWebSockets": ""
+    }
+}
