@@ -148,6 +148,7 @@ class PubSubEngine implements IPubSubEngine
 	private function onClose()
 	{
 		connected = false;
+		websocket.close();  // Just in case
 
 		pingTimer.stop();
 		reconnectTimer.startDelay();
