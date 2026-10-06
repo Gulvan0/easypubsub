@@ -85,7 +85,9 @@ class PubSubEngine implements IPubSubEngine
 	{
 		var subscription:Subscription<T> = new Subscription(this, channel);
 		activeSubscriptions.add(channel.hash(), cast subscription);
-		sendSubOrUnsubEvent(channel, true);
+		// while disconnected, onOpen subscribes to every active channel once the connection is up
+		if (connected)
+			sendSubOrUnsubEvent(channel, true);
 		return subscription;
 	}
 
@@ -93,7 +95,7 @@ class PubSubEngine implements IPubSubEngine
 	{
 		var channelHash:String = subscription.channel.hash();
 		activeSubscriptions.remove(channelHash, cast subscription);
-		if (!activeSubscriptions.hasValues(channelHash))
+		if (connected && !activeSubscriptions.hasValues(channelHash))
 			sendSubOrUnsubEvent(subscription.channel, false);
 	}
 
@@ -114,7 +116,7 @@ class PubSubEngine implements IPubSubEngine
 		pingTimer.start();
 
 		for (canonicalChannelJson in activeSubscriptions.keys())
-			sendSerializedEvent("sub", canonicalChannelJson);
+			sendSerializedEvent("sub", '{"channel":$canonicalChannelJson}');
 	}
 
 	private function onMessage(msg:MessageType)

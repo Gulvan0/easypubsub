@@ -67,10 +67,10 @@ class ChannelMacro
 
 	private static function makeToJson(channelGroupName:String, channelParameterFields:Array<Field>):Field
 	{
-		// 1. Each channel when casted to JSON will have a mandatory `group` field, let's create it
+		// 1. Each channel when casted to JSON will have a mandatory `channel_group` field (the server's channel discriminator), let's create it
 		var jsonFields:Array<ObjectField> = [
 			{
-				field: "group",
+				field: "channel_group",
 				expr: macro $v{channelGroupName} // The value is a string constant (channelGroupName's value)
 			}
 		];
