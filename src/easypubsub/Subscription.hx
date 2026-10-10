@@ -21,13 +21,14 @@ class Subscription<TChannel:IChannel>
 		this.channel = channel;
 	}
 
-	private function getEventKind<T>(kind:Class<IEvent<T, TChannel>>):String
+	private function getEventKind<T, TEventChannel:IChannel>(kind:Class<IEvent<T, TEventChannel>>):String
 	{
 		return Type.getClassName(kind).lastDelimitedPart(".").toSnakeCase();
 	}
 
+	// TEventChannel only keys @:generic's expansion by channel too: keyed by the payload alone, the first channel to use a payload type would be baked into it
 	@:generic
-	public function onEvent<TPayload:JsonUnserializable>(kind:Class<IEvent<TPayload, TChannel>>, handler:TPayload->Subscription<TChannel>->Void):Subscription<TChannel>
+	public function onEvent<TPayload:JsonUnserializable, TEventChannel:TChannel>(kind:Class<IEvent<TPayload, TEventChannel>>, handler:TPayload->Subscription<TChannel>->Void):Subscription<TChannel>
 	{
 		function callback(rawPayload:Dynamic)
 		{
@@ -51,8 +52,9 @@ class Subscription<TChannel:IChannel>
 		return this;
 	}
 
+	// see onEvent for TEventChannel
 	@:generic
-	public function onEventLight<TPayload:JsonUnserializable>(kind:Class<IEvent<TPayload, TChannel>>, handler:TPayload->Void):Subscription<TChannel>
+	public function onEventLight<TPayload:JsonUnserializable, TEventChannel:TChannel>(kind:Class<IEvent<TPayload, TEventChannel>>, handler:TPayload->Void):Subscription<TChannel>
 	{
 		function callback(rawPayload:Dynamic)
 		{
