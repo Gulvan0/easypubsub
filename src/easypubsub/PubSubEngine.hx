@@ -99,6 +99,40 @@ class PubSubEngine implements IPubSubEngine
 			sendSubOrUnsubEvent(subscription.channel, false);
 	}
 
+	/** Same as `sub` for each channel, in a single message **/
+	public function subMany<T:IChannel>(channels:Array<T>):Array<Subscription<T>>
+	{
+		var subscriptions:Array<Subscription<T>> = [];
+		for (channel in channels)
+		{
+			var subscription:Subscription<T> = new Subscription(this, channel);
+			activeSubscriptions.add(channel.hash(), cast subscription);
+			subscriptions.push(subscription);
+		}
+		if (connected && channels.length > 0)
+			sendEvent("sub_many", {channels: channels.map(channel -> channel.toJson())});
+		return subscriptions;
+	}
+
+	/** Same as `unsub` for each subscription, in a single message **/
+	public function unsubMany<T:IChannel>(subscriptions:Array<Subscription<T>>)
+	{
+		var releasedHashes:Array<String> = [];
+		var releasedChannels:Array<Dynamic> = [];
+		for (subscription in subscriptions)
+		{
+			var channelHash:String = subscription.channel.hash();
+			activeSubscriptions.remove(channelHash, cast subscription);
+			if (!activeSubscriptions.hasValues(channelHash) && !releasedHashes.contains(channelHash))
+			{
+				releasedHashes.push(channelHash);
+				releasedChannels.push(subscription.channel.toJson());
+			}
+		}
+		if (connected && releasedChannels.length > 0)
+			sendEvent("unsub_many", {channels: releasedChannels});
+	}
+
 	private function heartbeatTick()
 	{
 		sendEvent("ping", {last_activity: lastActivityUnixSecs});
@@ -115,8 +149,9 @@ class PubSubEngine implements IPubSubEngine
 		reconnectTimer.reset();
 		pingTimer.start();
 
-		for (canonicalChannelJson in activeSubscriptions.keys())
-			sendSerializedEvent("sub", '{"channel":$canonicalChannelJson}');
+		var canonicalChannelJsons:Array<String> = [for (canonicalChannelJson in activeSubscriptions.keys()) canonicalChannelJson];
+		if (canonicalChannelJsons.length > 0)
+			sendSerializedEvent("sub_many", '{"channels":[${canonicalChannelJsons.join(",")}]}');
 	}
 
 	private function onMessage(msg:MessageType)
