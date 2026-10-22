@@ -6,4 +6,5 @@ interface IPubSubEngine
 	public function unsub<T:IChannel>(subscription:Subscription<T>):Void;
 	public function subMany<T:IChannel>(channels:Array<T>):Array<Subscription<T>>;
 	public function unsubMany<T:IChannel>(subscriptions:Array<Subscription<T>>):Void;
+	public function subGroup<T:IChannel>(channels:Array<T>):SubscriptionGroup<T>;
 }

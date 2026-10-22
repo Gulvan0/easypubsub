@@ -14,6 +14,11 @@ class Subscription<TChannel:IChannel>
 
 	private final handlers:StringSetMap<Dynamic->Void> = new StringSetMap();
 	private final anyEventHandlers:Array<String->Dynamic->Void> = [];
+	private final errorHandlers:Array<String->Dynamic->Void> = [];
+
+	/** Whether the channel's snapshot has arrived since the (re)subscription; see `PubSubEngine.snapshotEventKind` **/
+	@:allow(easypubsub.PubSubEngine)
+	private var snapshotReceived:Bool = false;
 
 	public function new(engine:IPubSubEngine, channel:TChannel)
 	{
@@ -84,11 +89,19 @@ class Subscription<TChannel:IChannel>
 		return this;
 	}
 
+	/** Called with the error kind and details when the server rejects an operation on this subscription's channel, e.g. the subscription itself **/
+	public function onError(handler:String->Dynamic->Void):Subscription<TChannel>
+	{
+		errorHandlers.push(handler);
+		return this;
+	}
+
 	public function dropAllHandlers<T>(kind:Null<Class<IEvent<T, TChannel>>> = null)
 	{
 		if (kind == null) {
 			handlers.clear();
 			anyEventHandlers.resize(0);
+			errorHandlers.resize(0);
 		} else {
 			handlers.removeAll(getEventKind(kind));
 		}
@@ -101,6 +114,13 @@ class Subscription<TChannel:IChannel>
 			handler(rawPayload);
 		for (handler in anyEventHandlers)
 			handler(eventKind, rawPayload);
+	}
+
+	@:allow(easypubsub.PubSubEngine)
+	private function dispatchError(errorKind:String, details:Dynamic)
+	{
+		for (handler in errorHandlers)
+			handler(errorKind, details);
 	}
 
 	public function branch():Subscription<TChannel>

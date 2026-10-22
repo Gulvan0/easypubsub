@@ -8,6 +8,7 @@ import js.html.Event;
 import morestd.DateTime;
 import morestd.RefreshableTimer;
 import haxe.Json;
+import haxe.Timer;
 import hx.ws.WebSocket;
 
 class PubSubEngine implements IPubSubEngine
@@ -15,12 +16,27 @@ class PubSubEngine implements IPubSubEngine
 	private var websocket:WebSocket;
 	private var pingTimer:RefreshableTimer;
 	private var reconnectTimer:BackoffDelayTimer;
+	private var sessionPending:Bool = false;
 
 	private var lastServerMessageUnixSecs:Int;
 
 	public var activeSubscriptions:StringSetMap<Subscription<IChannel>> = new StringSetMap();
 	public var connected(default, null):Bool = false;
 	public var hasEverBeenConnected(default, null):Bool = false;
+
+	/** Called when the server rejects the token sent with the session **/
+	public var onAuthError:Null<Void->Void> = null;
+
+	/**
+		Tells whether an event kind (snake_case) is a channel's snapshot, i.e. the event replacing the whole state.
+		Together with `expectsSnapshot`, makes subscriptions ignore the events arriving before their snapshot:
+		the server registers a subscriber before computing the snapshot, so such events are already reflected in it.
+		Gating is off while this is null.
+	**/
+	public var snapshotEventKind:Null<String->Bool> = null;
+
+	/** Whether the channel is followed by a snapshot upon subscription. Channels without one are never gated **/
+	public var expectsSnapshot:Null<IChannel->Bool> = null;
 
 	private var tokenRetriever:Null<Void->Null<String>> = null;
 	private var lastActivityUnixSecsRetriever:Null<Void->Null<Int>> = null;
@@ -59,8 +75,6 @@ class PubSubEngine implements IPubSubEngine
 	public function sendEvent(eventSlug:String, body:Null<{}> = null)
 	{
 		var message:{} = {event: eventSlug};
-		if (token != null)
-			Reflect.setField(message, "token", token);
 		if (body != null)
 			Reflect.setField(message, "body", body);
 		websocket.send(Json.stringify(message));
@@ -68,11 +82,44 @@ class PubSubEngine implements IPubSubEngine
 
 	public function sendSerializedEvent(eventSlug:String, serializedBody:String)
 	{
-		var message:String = '{"event":"$eventSlug","body":$serializedBody';
+		websocket.send('{"event":"$eventSlug","body":$serializedBody}');
+	}
+
+	/** Tells the server who this connection acts as and makes its subscriptions exactly the active ones **/
+	private function sendSession()
+	{
+		// the server answers the session with fresh snapshots
+		for (channelHash in activeSubscriptions.keys())
+			for (subscription in activeSubscriptions.get(channelHash))
+				subscription.snapshotReceived = false;
+
+		var canonicalChannelJsons:Array<String> = [for (canonicalChannelJson in activeSubscriptions.keys()) canonicalChannelJson];
+		var body:String = '{"channels":[${canonicalChannelJsons.join(",")}]';
 		if (token != null)
-			message += ',"token":"$token"';
-		message += "}";
-		websocket.send(message);
+			body += ',"token":${Json.stringify(token)}';
+		body += "}";
+		sendSerializedEvent("session", body);
+	}
+
+	/**
+		Re-sends the session, e.g. after the token has changed. Takes effect on connect otherwise.
+		Deferred to the end of the current tick, so that the subscriptions changed meanwhile are sent along with it
+		(and under the new identity) instead of one by one.
+	**/
+	public function reauth()
+	{
+		if (!connected || sessionPending)
+			return;
+
+		sessionPending = true;
+		Timer.delay(flushSession, 0);
+	}
+
+	private function flushSession()
+	{
+		sessionPending = false;
+		if (connected)
+			sendSession();
 	}
 
 	private function sendSubOrUnsubEvent(channel:IChannel, sub:Bool)
@@ -86,7 +133,7 @@ class PubSubEngine implements IPubSubEngine
 		var subscription:Subscription<T> = new Subscription(this, channel);
 		activeSubscriptions.add(channel.hash(), cast subscription);
 		// while disconnected, onOpen subscribes to every active channel once the connection is up
-		if (connected)
+		if (connected && !sessionPending)
 			sendSubOrUnsubEvent(channel, true);
 		return subscription;
 	}
@@ -95,7 +142,7 @@ class PubSubEngine implements IPubSubEngine
 	{
 		var channelHash:String = subscription.channel.hash();
 		activeSubscriptions.remove(channelHash, cast subscription);
-		if (connected && !activeSubscriptions.hasValues(channelHash))
+		if (connected && !sessionPending && !activeSubscriptions.hasValues(channelHash))
 			sendSubOrUnsubEvent(subscription.channel, false);
 	}
 
@@ -109,7 +156,7 @@ class PubSubEngine implements IPubSubEngine
 			activeSubscriptions.add(channel.hash(), cast subscription);
 			subscriptions.push(subscription);
 		}
-		if (connected && channels.length > 0)
+		if (connected && !sessionPending && channels.length > 0)
 			sendEvent("sub_many", {channels: channels.map(channel -> channel.toJson())});
 		return subscriptions;
 	}
@@ -129,8 +176,21 @@ class PubSubEngine implements IPubSubEngine
 				releasedChannels.push(subscription.channel.toJson());
 			}
 		}
-		if (connected && releasedChannels.length > 0)
+		if (connected && !sessionPending && releasedChannels.length > 0)
 			sendEvent("unsub_many", {channels: releasedChannels});
+	}
+
+	/** `subMany`, with the subscriptions wrapped into a group sharing the handlers **/
+	public function subGroup<T:IChannel>(channels:Array<T>):SubscriptionGroup<T>
+	{
+		return new SubscriptionGroup(this, subMany(channels));
+	}
+
+	/** Sends the heartbeat right away (if connected), e.g. to report fresh user activity sooner than the next scheduled one **/
+	public function sendHeartbeat()
+	{
+		if (connected)
+			sendEvent("ping", {last_activity: lastActivityUnixSecs});
 	}
 
 	private function heartbeatTick()
@@ -149,9 +209,7 @@ class PubSubEngine implements IPubSubEngine
 		reconnectTimer.reset();
 		pingTimer.start();
 
-		var canonicalChannelJsons:Array<String> = [for (canonicalChannelJson in activeSubscriptions.keys()) canonicalChannelJson];
-		if (canonicalChannelJsons.length > 0)
-			sendSerializedEvent("sub_many", '{"channels":[${canonicalChannelJsons.join(",")}]}');
+		sendSession();
 	}
 
 	private function onMessage(msg:MessageType)
@@ -169,10 +227,26 @@ class PubSubEngine implements IPubSubEngine
 		try
 		{
 			final rawData:Dynamic = Json.parse(strContent);
-			final eventKind:String = Reflect.field(rawData, "event");
-			final rawPayload:Dynamic = Reflect.field(rawData, "body");
+			if (Reflect.field(rawData, "error") == "authorization_error")
+			{
+				// the server has dropped the identity and the subscriptions; the owner decides what to do with the token
+				if (onAuthError != null)
+					onAuthError();
+				return;
+			}
 			final channelJson:Dynamic = Reflect.field(rawData, "channel");
 			final channelHash:String = JsonUtils.canonize(channelJson);
+			final errorKind:Null<String> = Reflect.field(rawData, "error");
+			if (errorKind != null)
+			{
+				// errors concerning no particular channel have nobody to be routed to
+				if (channelJson != null)
+					for (subscription in activeSubscriptions.get(channelHash))
+						subscription.dispatchError(errorKind, Reflect.field(rawData, "details"));
+				return;
+			}
+			final eventKind:String = Reflect.field(rawData, "event");
+			final rawPayload:Dynamic = Reflect.field(rawData, "body");
 			for (subscription in activeSubscriptions.get(channelHash))
 				subscription.dispatch(eventKind, rawPayload);
 		}
